@@ -28,6 +28,7 @@ FPV_BANDS_MHZ: Dict[str, List[int]] = {
     "R": [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917],
 }
 
+#test
 
 def setup_hackrf(sample_rate: float, total_gain_db: float) -> Tuple[SoapySDR.Device, object]:
     """Create and configure HackRF via SoapySDR.
@@ -119,14 +120,31 @@ def _read_into_buffer(dev: SoapySDR.Device, rx_stream: object, buff: np.ndarray)
     while total < target:
         elems = int(min(4096, target - total))
         ret = dev.readStream(rx_stream, [view[total:total + elems]], elems)
-        if isinstance(ret, tuple):
-            n_read, _flags, _time = ret
-        else:
-            n_read = ret
+
+        # Normalize return to an integer sample count across bindings
+        n_read = 0
+        try:
+            # Newer bindings may return StreamResult object
+            if hasattr(SoapySDR, "StreamResult") and isinstance(ret, SoapySDR.StreamResult):
+                n_read = int(getattr(ret, "ret", 0) or 0)
+            elif isinstance(ret, tuple):
+                n_read = int((ret[0] if ret else 0) or 0)
+            else:
+                n_read = int(ret or 0)
+        except Exception:
+            n_read = 0
+
+        # Handle negative error codes (timeout/overflow) as non-fatal
         if n_read is None:
             n_read = 0
         if n_read < 0:
-            # Timeout or overflow; treat as zero read and continue
+            # Optional: back-off on timeout
+            try:
+                if n_read == SoapySDR.SOAPY_SDR_TIMEOUT:
+                    time.sleep(0.001)
+            except Exception:
+                pass
+            # Ignore and continue
             n_read = 0
         if n_read == 0:
             # Brief back-off to avoid busy loop
