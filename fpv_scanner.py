@@ -42,6 +42,7 @@ DEFAULT_ENABLE_AMP: bool = False         # Enable HackRF RF AMP (if available)
 DEFAULT_DEBUG: bool = False              # Print per-channel debug metrics
 DEFAULT_LOOP_INTERVAL_S: float = 1.0     # Delay between scan passes in continuous mode
 DEFAULT_CONFIRMATIONS: int = 2           # Times in a row required to trigger action
+DEFAULT_PLAY_DURATION_S: float = 10.0    # Seconds to transmit/play video before resuming detection
 
 #test
 
@@ -352,6 +353,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--single", action="store_true", help="Run one pass and exit (otherwise continuous)")
     parser.add_argument("--loop-interval", type=float, default=DEFAULT_LOOP_INTERVAL_S, help="Delay between scan passes in seconds")
     parser.add_argument("--confirmations", type=int, default=DEFAULT_CONFIRMATIONS, help="Detections in a row required to trigger action")
+    parser.add_argument("--play-duration", type=float, default=DEFAULT_PLAY_DURATION_S, help="Seconds to transmit/play video before resuming detection")
 
     args = parser.parse_args(argv)
 
@@ -411,8 +413,14 @@ def main(argv: List[str]) -> int:
                     for key, count in list(consecutive.items()):
                         if count >= int(args.confirmations) and key not in triggered:
                             band, ch = key
-                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing video")
-                            triggered.add(key)
+                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing video {args.play_duration:.1f}s")
+                            # Simulate transmit/playback period: pause detection
+                            start = time.time()
+                            while time.time() - start < float(args.play_duration):
+                                time.sleep(0.1)
+                            # After playback, reset counters and continue detection
+                            consecutive.clear()
+                            triggered.clear()
                 else:
                     print("Ingen analoge FPV-signaler detektert.")
                     # Reset all counts when nothing is detected
