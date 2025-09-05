@@ -284,11 +284,17 @@ def scan_all_channels(
     smooth_mhz: float,
     noise_percentile: float,
     debug: bool,
-) -> List[Tuple[str, int, int]]:
-    """Scan all FPV bands/channels. Returns list of detections as (band, ch, freq_mhz)."""
+) -> Tuple[List[Tuple[str, int, int]], Dict[Tuple[str, int], float]]:
+    """Scan all FPV bands/channels.
+
+    Returns:
+      - detections: list of (band, ch, freq_mhz)
+      - strengths: dict mapping (band, ch) -> peak_over_median (dB) for this pass
+    """
     dev, rx_stream = setup_hackrf(sample_rate=sample_rate, total_gain_db=total_gain_db, enable_amp=enable_amp)
 
     detections: List[Tuple[str, int, int]] = []
+    strengths: Dict[Tuple[str, int], float] = {}
     min_bw_hz = float(min_bandwidth_mhz) * 1e6
     settle_time_s = max(0.0, settle_ms / 1000.0)
 
@@ -325,6 +331,7 @@ def scan_all_channels(
                     print(f"[DETECTED] Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "
                           f"peak+{peak_over_median:.1f} dB, bw {bw_hz/1e6:.1f} MHz")
                     detections.append((band_name, ch_idx, int(f_mhz)))
+                    strengths[(band_name, ch_idx)] = float(peak_over_median)
                 else:
                     if debug:
                         print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "
@@ -335,7 +342,7 @@ def scan_all_channels(
     finally:
         close_hackrf(dev, rx_stream)
 
-    return detections
+    return detections, strengths
 
 
 def main(argv: List[str]) -> int:
@@ -383,7 +390,7 @@ def main(argv: List[str]) -> int:
         print("Continuous scan mode enabled")
     print("Scanning all 40 channels...\n")
 
-    def run_once() -> List[Tuple[str, int, int]]:
+    def run_once() -> Tuple[List[Tuple[str, int, int]], Dict[Tuple[str, int], float]]:
         return scan_all_channels(
             sample_rate=sample_rate_sps,
             total_gain_db=args.gain,
@@ -398,7 +405,7 @@ def main(argv: List[str]) -> int:
         )
 
     if args.single:
-        detections = run_once()
+        detections, strengths = run_once()
         print("\n--- RESULTAT ---")
         if detections:
             for band, ch, f_mhz in detections:
@@ -413,7 +420,7 @@ def main(argv: List[str]) -> int:
         vtx = VTXController(method=str(args.vtx), command_template=(str(args.vtx_cmd) or None))
         try:
             while True:
-                detections = run_once()
+                detections, strengths = run_once()
                 print("\n--- RESULTAT ---")
                 if detections:
                     for band, ch, f_mhz in detections:
@@ -427,20 +434,30 @@ def main(argv: List[str]) -> int:
                         if key not in detected_keys:
                             consecutive[key] = 0
                     # Check triggers
+                    # Build candidates that reached confirmation threshold this pass
+                    candidates: List[Tuple[str, int, float]] = []
                     for key, count in list(consecutive.items()):
                         if count >= int(args.confirmations) and key not in triggered:
-                            band, ch = key
-                            if bool(args.activate):
-                                print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> set VTX + play {args.video} for {args.play_duration:.1f}s")
-                                # Set VTX to the detected channel (user can wire this to SmartAudio via cmd template)
-                                vtx.set_band_channel(band, ch)
-                            else:
-                                print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> local play {args.video} for {args.play_duration:.1f}s (no TX)")
-                            # Play the video for the requested duration
-                            tx.play_for(float(args.play_duration))
-                            # After playback, reset counters and continue detection
-                            consecutive.clear()
-                            triggered.clear()
+                            s = strengths.get(key, 0.0)
+                            candidates.append((key[0], key[1], s))
+                    if candidates:
+                        # Choose the strongest by peak-over-median dB
+                        band, ch, s = max(candidates, key=lambda t: t[2])
+                        if bool(args.activate):
+                            print(f"[TRIGGER] Strongest: Band {band} CH{ch} (peak+{s:.1f} dB) -> set VTX + play {args.video} for {args.play_duration:.1f}s")
+                            vtx.set_band_channel(band, ch)
+                        else:
+                            try:
+                                freq_mhz = FPV_BANDS_MHZ[band][ch - 1]
+                            except Exception:
+                                freq_mhz = 0
+                            print(
+                                f"[TRIGGER] Strongest: Band {band} CH{ch} (peak+{s:.1f} dB) -> local play {args.video} for {args.play_duration:.1f}s (no TX). "
+                                f"Would TX on Band {band} CH{ch} at {freq_mhz} MHz"
+                            )
+                        tx.play_for(float(args.play_duration))
+                        consecutive.clear()
+                        triggered.clear()
                 else:
                     print("Ingen analoge FPV-signaler detektert.")
                     # Reset all counts when nothing is detected
