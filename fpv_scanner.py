@@ -28,6 +28,15 @@ FPV_BANDS_MHZ: Dict[str, List[int]] = {
     "R": [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917],
 }
 
+
+# Default configuration (edit here to change standardverdier)
+DEFAULT_GAIN_DB: float = 30.0            # Total RX gain (LNA+VGA)
+DEFAULT_SAMPLE_RATE_MSPS: float = 10.0   # Sample rate in MSPS
+DEFAULT_THRESHOLD_DB: float = 8.0        # Peak over median (dB)
+DEFAULT_MIN_BW_MHZ: float = 6.0          # Minimum bandwidth (MHz)
+DEFAULT_SAMPLES: int = 16384             # Samples per channel measurement
+DEFAULT_SETTLE_MS: int = 50              # Settle time after tuning (ms)
+
 #test
 
 def setup_hackrf(sample_rate: float, total_gain_db: float) -> Tuple[SoapySDR.Device, object]:
@@ -278,12 +287,12 @@ def main(argv: List[str]) -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    parser.add_argument("--gain", type=float, default=30.0, help="Total RX gain in dB (LNA+VGA)")
-    parser.add_argument("--sample-rate", type=float, default=10.0, help="Sample rate in MSPS")
-    parser.add_argument("--threshold", type=float, default=8.0, help="Detection threshold above median noise in dB")
-    parser.add_argument("--min-bw", type=float, default=6.0, help="Minimum bandwidth for detection in MHz")
-    parser.add_argument("--samples", type=int, default=16384, help="Samples per channel measurement")
-    parser.add_argument("--settle-ms", type=int, default=50, help="Settle time after tuning in milliseconds")
+    parser.add_argument("--gain", type=float, default=DEFAULT_GAIN_DB, help="Total RX gain in dB (LNA+VGA)")
+    parser.add_argument("--sample-rate", type=float, default=DEFAULT_SAMPLE_RATE_MSPS, help="Sample rate in MSPS")
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD_DB, help="Detection threshold above median noise in dB")
+    parser.add_argument("--min-bw", type=float, default=DEFAULT_MIN_BW_MHZ, help="Minimum bandwidth for detection in MHz")
+    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="Samples per channel measurement")
+    parser.add_argument("--settle-ms", type=int, default=DEFAULT_SETTLE_MS, help="Settle time after tuning in milliseconds")
 
     args = parser.parse_args(argv)
 
