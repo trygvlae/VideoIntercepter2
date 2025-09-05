@@ -40,6 +40,7 @@ DEFAULT_NOISE_PERCENTILE: float = 30.0   # Percentile for noise floor (e.g., 30 
 DEFAULT_SMOOTH_MHZ: float = 1.0          # Spectral smoothing width (MHz), 0 disables
 DEFAULT_ENABLE_AMP: bool = False         # Enable HackRF RF AMP (if available)
 DEFAULT_DEBUG: bool = False              # Print per-channel debug metrics
+DEFAULT_LOOP_INTERVAL_S: float = 1.0     # Delay between scan passes in continuous mode
 
 #test
 
@@ -315,12 +316,12 @@ def scan_all_channels(
                 )
 
                 if detected:
-                    print(f"[DETECTED] Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "+
+                    print(f"[DETECTED] Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "
                           f"peak+{peak_over_median:.1f} dB, bw {bw_hz/1e6:.1f} MHz")
                     detections.append((band_name, ch_idx, int(f_mhz)))
                 else:
                     if debug:
-                        print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "+
+                        print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "
                               f"peak+{peak_over_median:.1f} dB, bw {bw_hz/1e6:.1f} MHz")
                     else:
                         print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)")
@@ -347,6 +348,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--noise-percentile", type=float, default=DEFAULT_NOISE_PERCENTILE, help="Percentile used for noise floor estimate (1-49)")
     parser.add_argument("--smooth", type=float, default=DEFAULT_SMOOTH_MHZ, help="Smoothing width in MHz for spectrum (0 disables)")
     parser.add_argument("--debug", action="store_true", default=DEFAULT_DEBUG, help="Print per-channel metrics when CLEAR")
+    parser.add_argument("--loop", action="store_true", help="Continuous scan until interrupted")
+    parser.add_argument("--loop-interval", type=float, default=DEFAULT_LOOP_INTERVAL_S, help="Delay between scan passes in seconds")
 
     args = parser.parse_args(argv)
 
@@ -357,27 +360,46 @@ def main(argv: List[str]) -> int:
           f"Threshold: +{args.threshold:.1f} dB over median, Min BW: {args.min_bw:.1f} MHz")
     print(f"Samples/measurement: {args.samples}, Settle: {args.settle_ms} ms, AMP: {bool(args.amp)}")
     print(f"Noise Pctl: {args.noise_percentile:.0f}, Smooth: {args.smooth:.1f} MHz, Debug: {bool(args.debug)}")
+    if args.loop:
+        print("Continuous scan mode enabled")
     print("Scanning all 40 channels...\n")
 
-    detections = scan_all_channels(
-        sample_rate=sample_rate_sps,
-        total_gain_db=args.gain,
-        threshold_offset_db=args.threshold,
-        min_bandwidth_mhz=args.min_bw,
-        samples_per_measurement=args.samples,
-        settle_ms=args.settle_ms,
-        enable_amp=bool(args.amp),
-        smooth_mhz=float(args.smooth),
-        noise_percentile=float(args.noise_percentile),
-        debug=bool(args.debug),
-    )
+    def run_once() -> List[Tuple[str, int, int]]:
+        return scan_all_channels(
+            sample_rate=sample_rate_sps,
+            total_gain_db=args.gain,
+            threshold_offset_db=args.threshold,
+            min_bandwidth_mhz=args.min_bw,
+            samples_per_measurement=args.samples,
+            settle_ms=args.settle_ms,
+            enable_amp=bool(args.amp),
+            smooth_mhz=float(args.smooth),
+            noise_percentile=float(args.noise_percentile),
+            debug=bool(args.debug),
+        )
 
-    print("\n--- RESULTAT ---")
-    if detections:
-        for band, ch, f_mhz in detections:
-            print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
+    if args.loop:
+        try:
+            while True:
+                detections = run_once()
+                print("\n--- RESULTAT ---")
+                if detections:
+                    for band, ch, f_mhz in detections:
+                        print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
+                else:
+                    print("Ingen analoge FPV-signaler detektert.")
+                time.sleep(max(0.0, float(args.loop_interval)))
+        except KeyboardInterrupt:
+            print("\nAvslutter kontinuerlig skanning...")
+            return 0
     else:
-        print("Ingen analoge FPV-signaler detektert.")
+        detections = run_once()
+        print("\n--- RESULTAT ---")
+        if detections:
+            for band, ch, f_mhz in detections:
+                print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
+        else:
+            print("Ingen analoge FPV-signaler detektert.")
 
     return 0
 
