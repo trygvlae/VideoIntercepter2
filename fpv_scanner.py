@@ -2,7 +2,7 @@ import argparse
 import math
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 
 import numpy as np
 
@@ -41,6 +41,7 @@ DEFAULT_SMOOTH_MHZ: float = 1.0          # Spectral smoothing width (MHz), 0 dis
 DEFAULT_ENABLE_AMP: bool = False         # Enable HackRF RF AMP (if available)
 DEFAULT_DEBUG: bool = False              # Print per-channel debug metrics
 DEFAULT_LOOP_INTERVAL_S: float = 1.0     # Delay between scan passes in continuous mode
+DEFAULT_CONFIRMATIONS: int = 2           # Times in a row required to trigger action
 
 #test
 
@@ -350,6 +351,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--debug", action="store_true", default=DEFAULT_DEBUG, help="Print per-channel metrics when CLEAR")
     parser.add_argument("--single", action="store_true", help="Run one pass and exit (otherwise continuous)")
     parser.add_argument("--loop-interval", type=float, default=DEFAULT_LOOP_INTERVAL_S, help="Delay between scan passes in seconds")
+    parser.add_argument("--confirmations", type=int, default=DEFAULT_CONFIRMATIONS, help="Detections in a row required to trigger action")
 
     args = parser.parse_args(argv)
 
@@ -387,6 +389,9 @@ def main(argv: List[str]) -> int:
         else:
             print("Ingen analoge FPV-signaler detektert.")
     else:
+        # Track consecutive detections per (band, ch)
+        consecutive: Dict[Tuple[str, int], int] = {}
+        triggered: Set[Tuple[str, int]] = set()
         try:
             while True:
                 detections = run_once()
@@ -394,8 +399,24 @@ def main(argv: List[str]) -> int:
                 if detections:
                     for band, ch, f_mhz in detections:
                         print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
+                        key = (band, ch)
+                        prev = consecutive.get(key, 0)
+                        consecutive[key] = prev + 1
+                    # Decay or reset channels not detected this pass
+                    detected_keys = {(b, c) for b, c, _ in detections}
+                    for key in list(consecutive.keys()):
+                        if key not in detected_keys:
+                            consecutive[key] = 0
+                    # Check triggers
+                    for key, count in list(consecutive.items()):
+                        if count >= int(args.confirmations) and key not in triggered:
+                            band, ch = key
+                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing video")
+                            triggered.add(key)
                 else:
                     print("Ingen analoge FPV-signaler detektert.")
+                    # Reset all counts when nothing is detected
+                    consecutive.clear()
                 time.sleep(max(0.0, float(args.loop_interval)))
         except KeyboardInterrupt:
             print("\nAvslutter kontinuerlig skanning...")
