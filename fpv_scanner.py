@@ -5,6 +5,7 @@ import time
 from typing import Dict, List, Tuple, Set
 
 from video_player import VideoTransmitter
+from vtx_controller import VTXController
 
 import numpy as np
 
@@ -45,6 +46,7 @@ DEFAULT_DEBUG: bool = False              # Print per-channel debug metrics
 DEFAULT_LOOP_INTERVAL_S: float = 1.0     # Delay between scan passes in continuous mode
 DEFAULT_CONFIRMATIONS: int = 2           # Times in a row required to trigger action
 DEFAULT_PLAY_DURATION_S: float = 10.0    # Seconds to transmit/play video before resuming detection
+DEFAULT_ACTIVATE: bool = True            # If True: set VTX and play to VTX; if False: local playback only
 
 #test
 
@@ -357,6 +359,12 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--confirmations", type=int, default=DEFAULT_CONFIRMATIONS, help="Detections in a row required to trigger action")
     parser.add_argument("--play-duration", type=float, default=DEFAULT_PLAY_DURATION_S, help="Seconds to transmit/play video before resuming detection")
     parser.add_argument("--video", type=str, default="video.mp4", help="MP4 file to play when threshold reached (same folder)")
+    parser.add_argument("--vtx", type=str, default="noop", choices=["noop", "cmd"], help="VTX control method")
+    parser.add_argument("--vtx-cmd", type=str, default="", help="Command template to set frequency (use {freq_mhz})")
+    act_group = parser.add_mutually_exclusive_group()
+    act_group.add_argument("--activate", dest="activate", action="store_true", help="Set VTX and transmit on trigger")
+    act_group.add_argument("--no-activate", dest="activate", action="store_false", help="Do not set VTX; local playback only")
+    parser.set_defaults(activate=DEFAULT_ACTIVATE)
 
     args = parser.parse_args(argv)
 
@@ -366,7 +374,11 @@ def main(argv: List[str]) -> int:
     print(f"Sample rate: {args.sample_rate:.2f} MSPS, Gain: {args.gain:.1f} dB, "
           f"Threshold: +{args.threshold:.1f} dB over median, Min BW: {args.min_bw:.1f} MHz")
     print(f"Samples/measurement: {args.samples}, Settle: {args.settle_ms} ms, AMP: {bool(args.amp)}")
-    print(f"Noise Pctl: {args.noise_percentile:.0f}, Smooth: {args.smooth:.1f} MHz, Debug: {bool(args.debug)}")
+    print(f"Noise Pctl: {args.noise_percentile:.0f}, Smooth: {args.smooth:.1f} MHz, Debug: {bool(args.debug)}, Activate TX: {bool(args.activate)}")
+    if bool(args.activate):
+        print(f"VTX mode: {args.vtx}, Command: {args.vtx_cmd or '(none)'}")
+    else:
+        print(f"VTX mode (dry-run): {args.vtx}, Command (not used): {args.vtx_cmd or '(none)'}")
     if not args.single:
         print("Continuous scan mode enabled")
     print("Scanning all 40 channels...\n")
@@ -398,6 +410,7 @@ def main(argv: List[str]) -> int:
         consecutive: Dict[Tuple[str, int], int] = {}
         triggered: Set[Tuple[str, int]] = set()
         tx = VideoTransmitter(video_path=str(args.video))
+        vtx = VTXController(method=str(args.vtx), command_template=(str(args.vtx_cmd) or None))
         try:
             while True:
                 detections = run_once()
@@ -417,7 +430,12 @@ def main(argv: List[str]) -> int:
                     for key, count in list(consecutive.items()):
                         if count >= int(args.confirmations) and key not in triggered:
                             band, ch = key
-                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing {args.video} for {args.play_duration:.1f}s")
+                            if bool(args.activate):
+                                print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> set VTX + play {args.video} for {args.play_duration:.1f}s")
+                                # Set VTX to the detected channel (user can wire this to SmartAudio via cmd template)
+                                vtx.set_band_channel(band, ch)
+                            else:
+                                print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> local play {args.video} for {args.play_duration:.1f}s (no TX)")
                             # Play the video for the requested duration
                             tx.play_for(float(args.play_duration))
                             # After playback, reset counters and continue detection
