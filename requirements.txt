@@ -1,0 +1,3 @@
+numpy>=1.24
+SoapySDR>=0.8.1
+
