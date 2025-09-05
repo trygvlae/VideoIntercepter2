@@ -47,6 +47,8 @@ DEFAULT_LOOP_INTERVAL_S: float = 1.0     # Delay between scan passes in continuo
 DEFAULT_CONFIRMATIONS: int = 2           # Times in a row required to trigger action
 DEFAULT_PLAY_DURATION_S: float = 10.0    # Seconds to transmit/play video before resuming detection
 DEFAULT_ACTIVATE: bool = True            # If True: set VTX and play to VTX; if False: local playback only
+DEFAULT_RESTRICT: str = ""              # Comma-separated R-band channels to restrict, e.g., "R1,R3"
+DEFAULT_RESTRICT_TOL_MHZ: float = 6.0    # Channels within this MHz of restricted freqs are also blocked
 
 #test
 
@@ -368,6 +370,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--video", type=str, default="video.mp4", help="MP4 file to play when threshold reached (same folder)")
     parser.add_argument("--vtx", type=str, default="noop", choices=["noop", "cmd"], help="VTX control method")
     parser.add_argument("--vtx-cmd", type=str, default="", help="Command template to set frequency (use {freq_mhz})")
+    parser.add_argument("--restrict", type=str, default=DEFAULT_RESTRICT, help="Comma-separated restricted R-band channels (e.g. R1,R3)")
+    parser.add_argument("--restrict-tol", type=float, default=DEFAULT_RESTRICT_TOL_MHZ, help="Restrict tolerance in MHz for nearby channels")
     act_group = parser.add_mutually_exclusive_group()
     act_group.add_argument("--activate", dest="activate", action="store_true", help="Set VTX and transmit on trigger")
     act_group.add_argument("--no-activate", dest="activate", action="store_false", help="Do not set VTX; local playback only")
@@ -389,6 +393,27 @@ def main(argv: List[str]) -> int:
     if not args.single:
         print("Continuous scan mode enabled")
     print("Scanning all 40 channels...\n")
+
+    # Parse restricted channels into a set of restricted frequencies with tolerance
+    restricted_freqs: Set[int] = set()
+    if str(args.restrict).strip():
+        for token in str(args.restrict).split(','):
+            token = token.strip().upper()
+            if token.startswith('R') and token[1:].isdigit():
+                r_idx = int(token[1:])
+                if 1 <= r_idx <= 8:
+                    restricted_freqs.add(int(FPV_BANDS_MHZ['R'][r_idx - 1]))
+
+    def is_restricted(band: str, ch: int) -> bool:
+        try:
+            f_mhz = int(FPV_BANDS_MHZ[band][ch - 1])
+        except Exception:
+            return False
+        tol = float(args.restrict_tol)
+        for rf in restricted_freqs:
+            if abs(f_mhz - rf) <= tol:
+                return True
+        return False
 
     def run_once() -> Tuple[List[Tuple[str, int, int]], Dict[Tuple[str, int], float]]:
         return scan_all_channels(
@@ -439,7 +464,15 @@ def main(argv: List[str]) -> int:
                     for key, count in list(consecutive.items()):
                         if count >= int(args.confirmations) and key not in triggered:
                             s = strengths.get(key, 0.0)
-                            candidates.append((key[0], key[1], s))
+                            if not is_restricted(key[0], key[1]):
+                                candidates.append((key[0], key[1], s))
+                            else:
+                                if bool(args.debug):
+                                    try:
+                                        f_mhz = FPV_BANDS_MHZ[key[0]][key[1] - 1]
+                                    except Exception:
+                                        f_mhz = 0
+                                    print(f"[SKIP] Restricted: Band {key[0]} CH{key[1]} ({f_mhz} MHz)")
                     if candidates:
                         # Choose the strongest by peak-over-median dB
                         band, ch, s = max(candidates, key=lambda t: t[2])
