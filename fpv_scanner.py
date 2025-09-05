@@ -4,6 +4,8 @@ import sys
 import time
 from typing import Dict, List, Tuple, Set
 
+from video_player import VideoTransmitter
+
 import numpy as np
 
 try:
@@ -354,6 +356,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--loop-interval", type=float, default=DEFAULT_LOOP_INTERVAL_S, help="Delay between scan passes in seconds")
     parser.add_argument("--confirmations", type=int, default=DEFAULT_CONFIRMATIONS, help="Detections in a row required to trigger action")
     parser.add_argument("--play-duration", type=float, default=DEFAULT_PLAY_DURATION_S, help="Seconds to transmit/play video before resuming detection")
+    parser.add_argument("--video", type=str, default="video.mp4", help="MP4 file to play when threshold reached (same folder)")
 
     args = parser.parse_args(argv)
 
@@ -394,6 +397,7 @@ def main(argv: List[str]) -> int:
         # Track consecutive detections per (band, ch)
         consecutive: Dict[Tuple[str, int], int] = {}
         triggered: Set[Tuple[str, int]] = set()
+        tx = VideoTransmitter(video_path=str(args.video))
         try:
             while True:
                 detections = run_once()
@@ -413,11 +417,9 @@ def main(argv: List[str]) -> int:
                     for key, count in list(consecutive.items()):
                         if count >= int(args.confirmations) and key not in triggered:
                             band, ch = key
-                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing video {args.play_duration:.1f}s")
-                            # Simulate transmit/playback period: pause detection
-                            start = time.time()
-                            while time.time() - start < float(args.play_duration):
-                                time.sleep(0.1)
+                            print(f"[TRIGGER] Detected Band {band} CH{ch} {count} times in a row -> playing {args.video} for {args.play_duration:.1f}s")
+                            # Play the video for the requested duration
+                            tx.play_for(float(args.play_duration))
                             # After playback, reset counters and continue detection
                             consecutive.clear()
                             triggered.clear()
