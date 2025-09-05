@@ -36,10 +36,14 @@ DEFAULT_THRESHOLD_DB: float = 8.0        # Peak over median (dB)
 DEFAULT_MIN_BW_MHZ: float = 6.0          # Minimum bandwidth (MHz)
 DEFAULT_SAMPLES: int = 16384             # Samples per channel measurement
 DEFAULT_SETTLE_MS: int = 50              # Settle time after tuning (ms)
+DEFAULT_NOISE_PERCENTILE: float = 30.0   # Percentile for noise floor (e.g., 30 = robust below-median)
+DEFAULT_SMOOTH_MHZ: float = 1.0          # Spectral smoothing width (MHz), 0 disables
+DEFAULT_ENABLE_AMP: bool = False         # Enable HackRF RF AMP (if available)
+DEFAULT_DEBUG: bool = False              # Print per-channel debug metrics
 
 #test
 
-def setup_hackrf(sample_rate: float, total_gain_db: float) -> Tuple[SoapySDR.Device, object]:
+def setup_hackrf(sample_rate: float, total_gain_db: float, enable_amp: bool) -> Tuple[SoapySDR.Device, object]:
     """Create and configure HackRF via SoapySDR.
 
     Splits total_gain_db across LNA and VGA conservatively.
@@ -57,6 +61,16 @@ def setup_hackrf(sample_rate: float, total_gain_db: float) -> Tuple[SoapySDR.Dev
     dev.setSampleRate(SOAPY_SDR_RX, 0, sample_rate)
     try:
         dev.setBandwidth(SOAPY_SDR_RX, 0, sample_rate)
+    except Exception:
+        pass
+
+    # RF AMP (front-end)
+    try:
+        dev.setGainMode(SOAPY_SDR_RX, 0, False)
+    except Exception:
+        pass
+    try:
+        dev.setGain(SOAPY_SDR_RX, 0, "AMP", 1.0 if enable_amp else 0.0)
     except Exception:
         pass
 
@@ -187,11 +201,33 @@ def compute_spectrum(samples: np.ndarray, sample_rate: float) -> Tuple[np.ndarra
     return power_db.astype(np.float32), freqs.astype(np.float32)
 
 
+def smooth_spectrum(power_db: np.ndarray, freqs_hz: np.ndarray, smooth_width_hz: float) -> np.ndarray:
+    """Apply simple moving-average smoothing over a frequency window width in Hz."""
+    if smooth_width_hz <= 0.0 or power_db.size == 0:
+        return power_db
+    # Compute kernel size in bins (~width / bin_width)
+    if freqs_hz.size < 2:
+        return power_db
+    bin_hz = float(abs(freqs_hz[1] - freqs_hz[0]))
+    if bin_hz <= 0:
+        return power_db
+    k = max(1, int(round(smooth_width_hz / bin_hz)))
+    k = min(k, power_db.size - 1)
+    if k <= 1:
+        return power_db
+    kernel = np.ones(k, dtype=np.float32) / float(k)
+    # Pad at edges to keep length consistent
+    padded = np.pad(power_db, (k // 2, k - 1 - k // 2), mode='edge')
+    smoothed = np.convolve(padded, kernel, mode='valid')
+    return smoothed.astype(np.float32)
+
+
 def detect_video(
     power_db: np.ndarray,
     freqs_hz: np.ndarray,
     median_offset_db: float,
     min_bandwidth_hz: float,
+    noise_percentile: float = DEFAULT_NOISE_PERCENTILE,
 ) -> Tuple[bool, float, float]:
     """Detect presence of analog video signal.
 
@@ -200,7 +236,9 @@ def detect_video(
     if power_db.size == 0 or freqs_hz.size == 0:
         return False, 0.0, 0.0
 
-    median_db = float(np.median(power_db))
+    # Robust noise estimate using percentile (e.g., 30th percentile)
+    p = float(np.clip(noise_percentile, 1.0, 49.0))
+    median_db = float(np.percentile(power_db, p))
     peak_idx = int(np.argmax(power_db))
     peak_db = float(power_db[peak_idx])
     peak_over_median = peak_db - median_db
@@ -235,9 +273,13 @@ def scan_all_channels(
     min_bandwidth_mhz: float,
     samples_per_measurement: int,
     settle_ms: int,
+    enable_amp: bool,
+    smooth_mhz: float,
+    noise_percentile: float,
+    debug: bool,
 ) -> List[Tuple[str, int, int]]:
     """Scan all FPV bands/channels. Returns list of detections as (band, ch, freq_mhz)."""
-    dev, rx_stream = setup_hackrf(sample_rate=sample_rate, total_gain_db=total_gain_db)
+    dev, rx_stream = setup_hackrf(sample_rate=sample_rate, total_gain_db=total_gain_db, enable_amp=enable_amp)
 
     detections: List[Tuple[str, int, int]] = []
     min_bw_hz = float(min_bandwidth_mhz) * 1e6
@@ -261,11 +303,15 @@ def scan_all_channels(
                 )
 
                 power_db, freqs_hz = compute_spectrum(samples, sample_rate=sample_rate)
+                if smooth_mhz > 0:
+                    power_db = smooth_spectrum(power_db, freqs_hz, smooth_mhz * 1e6)
+
                 detected, peak_over_median, bw_hz = detect_video(
                     power_db=power_db,
                     freqs_hz=freqs_hz,
                     median_offset_db=threshold_offset_db,
                     min_bandwidth_hz=min_bw_hz,
+                    noise_percentile=noise_percentile,
                 )
 
                 if detected:
@@ -273,7 +319,11 @@ def scan_all_channels(
                           f"peak+{peak_over_median:.1f} dB, bw {bw_hz/1e6:.1f} MHz")
                     detections.append((band_name, ch_idx, int(f_mhz)))
                 else:
-                    print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)")
+                    if debug:
+                        print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)  "+
+                              f"peak+{peak_over_median:.1f} dB, bw {bw_hz/1e6:.1f} MHz")
+                    else:
+                        print(f"[CLEAR]    Band {band_name} - CH{ch_idx} ({f_mhz} MHz)")
 
     finally:
         close_hackrf(dev, rx_stream)
@@ -293,6 +343,10 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--min-bw", type=float, default=DEFAULT_MIN_BW_MHZ, help="Minimum bandwidth for detection in MHz")
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="Samples per channel measurement")
     parser.add_argument("--settle-ms", type=int, default=DEFAULT_SETTLE_MS, help="Settle time after tuning in milliseconds")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_ENABLE_AMP, help="Enable RF AMP (front-end) if available")
+    parser.add_argument("--noise-percentile", type=float, default=DEFAULT_NOISE_PERCENTILE, help="Percentile used for noise floor estimate (1-49)")
+    parser.add_argument("--smooth", type=float, default=DEFAULT_SMOOTH_MHZ, help="Smoothing width in MHz for spectrum (0 disables)")
+    parser.add_argument("--debug", action="store_true", default=DEFAULT_DEBUG, help="Print per-channel metrics when CLEAR")
 
     args = parser.parse_args(argv)
 
@@ -301,7 +355,8 @@ def main(argv: List[str]) -> int:
     print("=== FPV Analog Scanner (HackRF + SoapySDR) ===")
     print(f"Sample rate: {args.sample_rate:.2f} MSPS, Gain: {args.gain:.1f} dB, "
           f"Threshold: +{args.threshold:.1f} dB over median, Min BW: {args.min_bw:.1f} MHz")
-    print(f"Samples/measurement: {args.samples}, Settle: {args.settle_ms} ms")
+    print(f"Samples/measurement: {args.samples}, Settle: {args.settle_ms} ms, AMP: {bool(args.amp)}")
+    print(f"Noise Pctl: {args.noise_percentile:.0f}, Smooth: {args.smooth:.1f} MHz, Debug: {bool(args.debug)}")
     print("Scanning all 40 channels...\n")
 
     detections = scan_all_channels(
@@ -311,6 +366,10 @@ def main(argv: List[str]) -> int:
         min_bandwidth_mhz=args.min_bw,
         samples_per_measurement=args.samples,
         settle_ms=args.settle_ms,
+        enable_amp=bool(args.amp),
+        smooth_mhz=float(args.smooth),
+        noise_percentile=float(args.noise_percentile),
+        debug=bool(args.debug),
     )
 
     print("\n--- RESULTAT ---")
