@@ -348,7 +348,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--noise-percentile", type=float, default=DEFAULT_NOISE_PERCENTILE, help="Percentile used for noise floor estimate (1-49)")
     parser.add_argument("--smooth", type=float, default=DEFAULT_SMOOTH_MHZ, help="Smoothing width in MHz for spectrum (0 disables)")
     parser.add_argument("--debug", action="store_true", default=DEFAULT_DEBUG, help="Print per-channel metrics when CLEAR")
-    parser.add_argument("--loop", action="store_true", help="Continuous scan until interrupted")
+    parser.add_argument("--single", action="store_true", help="Run one pass and exit (otherwise continuous)")
     parser.add_argument("--loop-interval", type=float, default=DEFAULT_LOOP_INTERVAL_S, help="Delay between scan passes in seconds")
 
     args = parser.parse_args(argv)
@@ -360,7 +360,7 @@ def main(argv: List[str]) -> int:
           f"Threshold: +{args.threshold:.1f} dB over median, Min BW: {args.min_bw:.1f} MHz")
     print(f"Samples/measurement: {args.samples}, Settle: {args.settle_ms} ms, AMP: {bool(args.amp)}")
     print(f"Noise Pctl: {args.noise_percentile:.0f}, Smooth: {args.smooth:.1f} MHz, Debug: {bool(args.debug)}")
-    if args.loop:
+    if not args.single:
         print("Continuous scan mode enabled")
     print("Scanning all 40 channels...\n")
 
@@ -378,7 +378,15 @@ def main(argv: List[str]) -> int:
             debug=bool(args.debug),
         )
 
-    if args.loop:
+    if args.single:
+        detections = run_once()
+        print("\n--- RESULTAT ---")
+        if detections:
+            for band, ch, f_mhz in detections:
+                print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
+        else:
+            print("Ingen analoge FPV-signaler detektert.")
+    else:
         try:
             while True:
                 detections = run_once()
@@ -392,14 +400,6 @@ def main(argv: List[str]) -> int:
         except KeyboardInterrupt:
             print("\nAvslutter kontinuerlig skanning...")
             return 0
-    else:
-        detections = run_once()
-        print("\n--- RESULTAT ---")
-        if detections:
-            for band, ch, f_mhz in detections:
-                print(f"Analog FPV video på Band {band}, Kanal {ch} ({f_mhz} MHz)")
-        else:
-            print("Ingen analoge FPV-signaler detektert.")
 
     return 0
 
